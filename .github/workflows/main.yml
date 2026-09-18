@@ -13,8 +13,11 @@ permissions:
 env:
   ARCH: arm64
   SUBARCH: arm64
-  LLVM: 1
+
+  # Force LLVM / Clang 20
+  LLVM: /usr/lib/llvm-20/bin/
   LLVM_IAS: 1
+
   OUT_DIR: ${{ github.workspace }}/out
 
 jobs:
@@ -23,19 +26,22 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      # --------------------------------------------------
+
+      # ==================================================
       # Checkout
-      # --------------------------------------------------
+      # ==================================================
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # --------------------------------------------------
-      # Dependencies
-      # --------------------------------------------------
+      # ==================================================
+      # Install build dependencies
+      # ==================================================
       - name: Install dependencies
         run: |
+          set -e
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -59,68 +65,132 @@ jobs:
             xz-utils \
             unzip
 
-      # --------------------------------------------------
-      # LLVM / Clang 20
-      # --------------------------------------------------
-      - name: Install Clang 20
+      # ==================================================
+      # Install LLVM / Clang 20
+      # ==================================================
+      - name: Install LLVM Clang 20
         run: |
+          set -e
+
+          echo "Installing LLVM/Clang 20..."
+
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
+
           sudo ./llvm.sh 20 all
 
-          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          LLVM20="/usr/lib/llvm-20/bin"
 
-          echo "Clang version:"
-          clang --version
+          echo
+          echo "Checking LLVM 20 installation..."
 
-          echo "LLD version:"
-          ld.lld --version
+          test -x "$LLVM20/clang"
+          test -x "$LLVM20/clang++"
+          test -x "$LLVM20/ld.lld"
+          test -x "$LLVM20/llvm-ar"
+          test -x "$LLVM20/llvm-nm"
+          test -x "$LLVM20/llvm-objcopy"
+          test -x "$LLVM20/llvm-objdump"
+          test -x "$LLVM20/llvm-readelf"
+          test -x "$LLVM20/llvm-strip"
 
-          echo "LLVM version:"
-          llvm-config --version
+          echo
+          echo "===== Clang ====="
+          "$LLVM20/clang" --version
 
-      # --------------------------------------------------
-      # Check toolchain
-      # --------------------------------------------------
-      - name: Check toolchain
+          echo
+          echo "===== Clang++ ====="
+          "$LLVM20/clang++" --version
+
+          echo
+          echo "===== LLD ====="
+          "$LLVM20/ld.lld" --version
+
+          echo
+          echo "===== LLVM ====="
+          "$LLVM20/llvm-config" --version
+
+      # ==================================================
+      # Verify LLVM 20
+      # ==================================================
+      - name: Verify LLVM 20 toolchain
         run: |
-          which clang
-          which clang++
-          which ld.lld
-          which llvm-ar
-          which llvm-nm
-          which llvm-objcopy
-          which llvm-objdump
-          which llvm-strip
+          set -e
 
-          clang --version
-          ld.lld --version
+          LLVM20="/usr/lib/llvm-20/bin"
 
-      # --------------------------------------------------
-      # Prepare output directory
-      # --------------------------------------------------
+          echo "========================================"
+          echo "LLVM 20 toolchain"
+          echo "========================================"
+
+          echo "clang:"
+          "$LLVM20/clang" --version
+
+          echo
+          echo "ld.lld:"
+          "$LLVM20/ld.lld" --version
+
+          echo
+          echo "llvm-ar:"
+          "$LLVM20/llvm-ar" --version
+
+          echo
+          echo "llvm-nm:"
+          "$LLVM20/llvm-nm" --version
+
+          echo
+          echo "llvm-objcopy:"
+          "$LLVM20/llvm-objcopy" --version
+
+          echo
+          echo "llvm-strip:"
+          "$LLVM20/llvm-strip" --version
+
+          echo
+          echo "========================================"
+          echo "System clang (ignored)"
+          echo "========================================"
+
+          /usr/bin/clang --version || true
+
+          echo
+          echo "========================================"
+          echo "Kbuild LLVM path"
+          echo "========================================"
+
+          echo "LLVM=$LLVM"
+
+      # ==================================================
+      # Prepare build directory
+      # ==================================================
       - name: Prepare build directory
         run: |
+          set -e
+
           rm -rf "$OUT_DIR"
           mkdir -p "$OUT_DIR"
 
-      # --------------------------------------------------
-      # Generate base defconfig
-      # --------------------------------------------------
-      - name: Generate Munch kernel config
+      # ==================================================
+      # Generate base Qualcomm KONA defconfig
+      # ==================================================
+      - name: Generate KONA base config
         run: |
+          set -e
+
           make \
             O="$OUT_DIR" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
             vendor/kona-perf_defconfig
 
-      # --------------------------------------------------
-      # Merge Xiaomi / Munch configs
-      # --------------------------------------------------
-      - name: Merge Xiaomi and Munch configs
+      # ==================================================
+      # Merge Xiaomi / Munch configuration
+      # ==================================================
+      - name: Merge Xiaomi Munch config
         run: |
+          set -e
+
           ./scripts/kconfig/merge_config.sh \
             -m \
             "$OUT_DIR/.config" \
@@ -128,105 +198,142 @@ jobs:
             arch/arm64/configs/vendor/xiaomi/sm8250-common.config \
             arch/arm64/configs/vendor/xiaomi/munch.config
 
-      # --------------------------------------------------
-      # Resolve config dependencies
-      # --------------------------------------------------
+      # ==================================================
+      # Resolve configuration dependencies
+      # ==================================================
       - name: Run olddefconfig
         run: |
+          set -e
+
           make \
             O="$OUT_DIR" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
             olddefconfig
 
-      # --------------------------------------------------
-      # Show important Munch configs
-      # --------------------------------------------------
-      - name: Check kernel config
+      # ==================================================
+      # Check final configuration
+      # ==================================================
+      - name: Check final kernel config
         run: |
-          echo "===== Munch config ====="
+          set -e
+
+          echo "========================================"
+          echo "Munch configuration"
+          echo "========================================"
 
           grep -E \
             'CONFIG_MACH_XIAOMI_MUNCH|CONFIG_TOUCHSCREEN_FOCALTECH|CONFIG_FINGERPRINT|CONFIG_TECHPACK_CAMERA_XIAOMI' \
             "$OUT_DIR/.config" || true
 
           echo
-          echo "===== LLVM / Clang config ====="
+          echo "========================================"
+          echo "LLVM related configuration"
+          echo "========================================"
 
           grep -E \
             'CONFIG_LTO_CLANG|CONFIG_CFI_CLANG|CONFIG_SHADOW_CALL_STACK' \
             "$OUT_DIR/.config" || true
 
           echo
-          echo "===== Kernel version ====="
+          echo "========================================"
+          echo "Kernel version"
+          echo "========================================"
 
           make \
             O="$OUT_DIR" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
             kernelversion
 
-      # --------------------------------------------------
-      # Build kernel
-      # --------------------------------------------------
+      # ==================================================
+      # Build Image
+      # ==================================================
       - name: Build kernel Image
         run: |
+          set -e
+
           make \
             O="$OUT_DIR" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
             -j"$(nproc)" \
             Image
 
-      # --------------------------------------------------
+      # ==================================================
       # Build DTBs
-      # --------------------------------------------------
+      # ==================================================
       - name: Build DTBs
         run: |
+          set -e
+
           make \
             O="$OUT_DIR" \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            ARCH="$ARCH" \
+            LLVM="$LLVM" \
+            LLVM_IAS="$LLVM_IAS" \
             -j"$(nproc)" \
             dtbs
 
-      # --------------------------------------------------
-      # Collect build output
-      # --------------------------------------------------
+      # ==================================================
+      # Collect build outputs
+      # ==================================================
       - name: Collect kernel files
         run: |
+          set -e
+
+          rm -rf release
           mkdir -p release
 
-          cp "$OUT_DIR/arch/arm64/boot/Image" \
+          # Kernel Image
+          cp \
+            "$OUT_DIR/arch/arm64/boot/Image" \
             release/Image
 
+          # DTBs
           if [ -d "$OUT_DIR/arch/arm64/boot/dts" ]; then
             mkdir -p release/dtbs
-            find "$OUT_DIR/arch/arm64/boot/dts" \
+
+            find \
+              "$OUT_DIR/arch/arm64/boot/dts" \
               -type f \
-              \( -name "*.dtb" -o -name "*.dtbo" \) \
+              \( \
+                -name "*.dtb" \
+                -o -name "*.dtbo" \
+              \) \
               -exec cp --parents {} release/dtbs/ \;
           fi
 
-          echo "===== Build output ====="
+          echo
+          echo "========================================"
+          echo "Build output"
+          echo "========================================"
+
           find release -type f -exec ls -lh {} \;
 
-      # --------------------------------------------------
+      # ==================================================
       # Package
-      # --------------------------------------------------
+      # ==================================================
       - name: Package kernel
         run: |
-          tar -czvf \
-            munch-clang20-kernel.tar.gz \
-            -C release .
+          set -e
 
-      # --------------------------------------------------
-      # Upload artifact
-      # --------------------------------------------------
+          tar \
+            -czvf \
+            munch-clang20-kernel.tar.gz \
+            -C release \
+            .
+
+          echo
+          echo "Package:"
+          ls -lh munch-clang20-kernel.tar.gz
+
+      # ==================================================
+      # Upload GitHub Actions artifact
+      # ==================================================
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
