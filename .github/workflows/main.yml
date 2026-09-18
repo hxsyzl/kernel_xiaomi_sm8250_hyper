@@ -63,7 +63,8 @@ jobs:
             wget \
             curl \
             xz-utils \
-            unzip
+            unzip     \
+            ld.lld
 
       # ==================================================
       # Install LLVM / Clang 20
