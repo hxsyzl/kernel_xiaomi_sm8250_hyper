@@ -1,0 +1,239 @@
+name: Build Munch Kernel
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - qcom_xaga_millet
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  LLVM: 1
+  LLVM_IAS: 1
+  OUT_DIR: ${{ github.workspace }}/out
+
+jobs:
+  build:
+    name: Build Munch Kernel
+    runs-on: ubuntu-22.04
+
+    steps:
+      # --------------------------------------------------
+      # Checkout
+      # --------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # --------------------------------------------------
+      # Dependencies
+      # --------------------------------------------------
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            libdw-dev \
+            libncurses5-dev \
+            libncurses-dev \
+            dwarves \
+            device-tree-compiler \
+            cpio \
+            rsync \
+            git \
+            python3 \
+            python3-pip \
+            wget \
+            curl \
+            xz-utils \
+            unzip
+
+      # --------------------------------------------------
+      # LLVM / Clang 20
+      # --------------------------------------------------
+      - name: Install Clang 20
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20 all
+
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+
+          echo "Clang version:"
+          clang --version
+
+          echo "LLD version:"
+          ld.lld --version
+
+          echo "LLVM version:"
+          llvm-config --version
+
+      # --------------------------------------------------
+      # Check toolchain
+      # --------------------------------------------------
+      - name: Check toolchain
+        run: |
+          which clang
+          which clang++
+          which ld.lld
+          which llvm-ar
+          which llvm-nm
+          which llvm-objcopy
+          which llvm-objdump
+          which llvm-strip
+
+          clang --version
+          ld.lld --version
+
+      # --------------------------------------------------
+      # Prepare output directory
+      # --------------------------------------------------
+      - name: Prepare build directory
+        run: |
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+      # --------------------------------------------------
+      # Generate base defconfig
+      # --------------------------------------------------
+      - name: Generate Munch kernel config
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            vendor/kona-perf_defconfig
+
+      # --------------------------------------------------
+      # Merge Xiaomi / Munch configs
+      # --------------------------------------------------
+      - name: Merge Xiaomi and Munch configs
+        run: |
+          ./scripts/kconfig/merge_config.sh \
+            -m \
+            "$OUT_DIR/.config" \
+            arch/arm64/configs/vendor/debugfs.config \
+            arch/arm64/configs/vendor/xiaomi/sm8250-common.config \
+            arch/arm64/configs/vendor/xiaomi/munch.config
+
+      # --------------------------------------------------
+      # Resolve config dependencies
+      # --------------------------------------------------
+      - name: Run olddefconfig
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
+
+      # --------------------------------------------------
+      # Show important Munch configs
+      # --------------------------------------------------
+      - name: Check kernel config
+        run: |
+          echo "===== Munch config ====="
+
+          grep -E \
+            'CONFIG_MACH_XIAOMI_MUNCH|CONFIG_TOUCHSCREEN_FOCALTECH|CONFIG_FINGERPRINT|CONFIG_TECHPACK_CAMERA_XIAOMI' \
+            "$OUT_DIR/.config" || true
+
+          echo
+          echo "===== LLVM / Clang config ====="
+
+          grep -E \
+            'CONFIG_LTO_CLANG|CONFIG_CFI_CLANG|CONFIG_SHADOW_CALL_STACK' \
+            "$OUT_DIR/.config" || true
+
+          echo
+          echo "===== Kernel version ====="
+
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            kernelversion
+
+      # --------------------------------------------------
+      # Build kernel
+      # --------------------------------------------------
+      - name: Build kernel Image
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image
+
+      # --------------------------------------------------
+      # Build DTBs
+      # --------------------------------------------------
+      - name: Build DTBs
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            -j"$(nproc)" \
+            dtbs
+
+      # --------------------------------------------------
+      # Collect build output
+      # --------------------------------------------------
+      - name: Collect kernel files
+        run: |
+          mkdir -p release
+
+          cp "$OUT_DIR/arch/arm64/boot/Image" \
+            release/Image
+
+          if [ -d "$OUT_DIR/arch/arm64/boot/dts" ]; then
+            mkdir -p release/dtbs
+            find "$OUT_DIR/arch/arm64/boot/dts" \
+              -type f \
+              \( -name "*.dtb" -o -name "*.dtbo" \) \
+              -exec cp --parents {} release/dtbs/ \;
+          fi
+
+          echo "===== Build output ====="
+          find release -type f -exec ls -lh {} \;
+
+      # --------------------------------------------------
+      # Package
+      # --------------------------------------------------
+      - name: Package kernel
+        run: |
+          tar -czvf \
+            munch-clang20-kernel.tar.gz \
+            -C release .
+
+      # --------------------------------------------------
+      # Upload artifact
+      # --------------------------------------------------
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: munch-clang20-kernel
+          path: |
+            munch-clang20-kernel.tar.gz
+            release/Image
+            release/dtbs
+          if-no-files-found: error
+          retention-days: 7
