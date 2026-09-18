@@ -64,7 +64,7 @@ jobs:
             curl \
             xz-utils \
             unzip     \
-            ld.lld
+            lld
 
       # ==================================================
       # Install LLVM / Clang 20
